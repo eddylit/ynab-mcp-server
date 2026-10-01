@@ -27,7 +27,7 @@ afterEach(() => {
 describe("tool registration", () => {
   it("accepts null for every optional tool input", () => {
     vi.stubEnv("YNAB_AI_CATEGORIZATION", "true");
-    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     const registered = register();
 
     for (const { module } of tools) {
@@ -48,7 +48,7 @@ describe("tool registration", () => {
 
   it("carries a property-level description for every field of every tool", () => {
     vi.stubEnv("YNAB_AI_CATEGORIZATION", "true");
-    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     const registered = register();
 
     for (const { module } of tools) {
@@ -66,7 +66,7 @@ describe("tool registration", () => {
 
   it("wraps every tool's input schema in z.object()", () => {
     vi.stubEnv("YNAB_AI_CATEGORIZATION", "true");
-    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     const registered = register();
 
     for (const { module } of tools) {
@@ -77,7 +77,7 @@ describe("tool registration", () => {
 
   it("advertises the JSON Schema unchanged apart from the z.object() wrapping", () => {
     vi.stubEnv("YNAB_AI_CATEGORIZATION", "true");
-    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     const registered = register();
 
     for (const { module } of tools) {
@@ -99,7 +99,7 @@ describe("tool registration", () => {
 
   it("publishes annotations derived from the registry for every tool", () => {
     vi.stubEnv("YNAB_AI_CATEGORIZATION", "true");
-    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     const registered = register();
 
     for (const tool of tools) {

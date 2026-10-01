@@ -50,8 +50,8 @@ Environment variables:
 | --- | --- | --- |
 | `YNAB_API_TOKEN` | yes | Personal Access Token used for every API call |
 | `YNAB_PLAN_ID` | no | Default plan, so tools can omit `planId`. Find it with `ynab_list_plans`. |
-| `TYPESAFE_API_KEY` | no | Operator-owned TypeSafe credential. Required, but not sufficient, to enable category suggestions. |
-| `YNAB_AI_CATEGORIZATION` | no | Set to `"true"` together with `TYPESAFE_API_KEY` to expose the opt-in suggestion tool. |
+| `OPENROUTER_API_KEY` | no | Operator-owned OpenRouter API key, used to call TypeSafe Jev. Required, but not sufficient, to enable category suggestions. |
+| `YNAB_AI_CATEGORIZATION` | no | Set to `"true"` together with `OPENROUTER_API_KEY` to expose the opt-in suggestion tool. |
 
 ### Local: Claude Desktop / Claude Code
 
@@ -82,7 +82,7 @@ through; the shape of it:
 2. `npm run deploy` once to learn your `*.workers.dev` hostname
 3. Create a GitHub OAuth app whose callback is `https://<host>/callback`
 4. Use `npx wrangler secret put` for `ALLOWED_GITHUB_LOGIN`, `YNAB_API_TOKEN`,
-   `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `TYPESAFE_API_KEY`
+   `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `OPENROUTER_API_KEY`
 5. Run `npm run deploy` again
 6. Add `https://<host>/mcp` as a custom connector in claude.ai
 
@@ -149,7 +149,7 @@ runs and returns a pre-write undo manifest, but does not perform the undo. It
 never auto-applies suggestions, calls TypeSafe, or approves transactions.
 
 `ynab_suggest_categories` is off by default. To expose it, set both an
-operator-owned `TYPESAFE_API_KEY` and `YNAB_AI_CATEGORIZATION=true`, then restart
+operator-owned `OPENROUTER_API_KEY` and `YNAB_AI_CATEGORIZATION=true`, then restart
 the server. The API key is read from the environment (or a Worker secret), never
 from a tool argument. Omit `transactionIds`, pass `null`, or pass an empty
 array to fetch unapproved transactions and retain only uncategorized rows;
@@ -174,7 +174,7 @@ including rows carrying a `skipped_*` status; deleted rows are omitted.
 Payee history uses the latest 12 months, capped at 50 qualifying exact-payee
 rows. The history rule applies only when at least three such rows all use the
 same still-eligible category; every eligible row without that unanimous signal
-goes to TypeSafe's pinned `jev-1.13.0` System One model in batches of ten. Any
+goes to TypeSafe's pinned `typesafe/jev-1.13` System One model, via OpenRouter, in batches of ten. Any
 disagreement between the history plurality and the model forces
 `needs_review`. Every inspected eligible row includes a status, content
 fingerprint, proposed category, confidence, winning probability, up to three
@@ -184,13 +184,14 @@ explicit human decision using `ynab_apply_category_suggestions` (or the general
 
 Enabling this feature sends the transaction's display payee, imported/original
 payee, memo, amount, date, and account name/type/on-budget status, plus visible
-category group and category names, to **TypeSafe as a third-party processor**.
+category group and category names, to **OpenRouter, which routes it to TypeSafe;
+both act as third-party processors**.
 It does not send YNAB UUIDs, balances, goals, approval/cleared state, or raw
-transaction history. TypeSafe's published Jev 1.13 price at the time of this
+transaction history. OpenRouter's published Jev 1.13 price at the time of this
 release is **$0.042 per million input tokens; output tokens are free**. The tool
 returns preflight estimates, actual token usage, and projected cost on each run
 and refuses requests over its per-call token/cost ceilings. Pricing and
-provider limits can change; check <https://docs.typesafe.ai/models>.
+provider limits can change; check <https://openrouter.ai/typesafe/jev-1.13>.
 
 The prototype is intentionally narrow and not default-on. Its supporting
 98.3% exact-label, 98.9% top-three, and 60/60 expected-abstention results came

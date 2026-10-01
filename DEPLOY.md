@@ -71,10 +71,10 @@ npx wrangler secret put YNAB_PLAN_ID
 `YNAB_BUDGET_ID` is deprecated but still accepted as an alias; there is no
 removal date. Use `YNAB_PLAN_ID` for new deployments.
 
-Set the operator-owned TypeSafe credential as a Worker secret:
+Set the operator-owned OpenRouter API key (used to call TypeSafe Jev) as a Worker secret:
 
 ```bash
-npx wrangler secret put TYPESAFE_API_KEY
+npx wrangler secret put OPENROUTER_API_KEY
 ```
 
 Category suggestions remain off unless you also add
@@ -172,9 +172,10 @@ tool and its safeguards.
 
 The request sends display payee and imported/original payee text, memo, amount,
 date, account name/type/on-budget status, and visible category group/category
-names to **TypeSafe as a third-party processor**. It does not send YNAB UUIDs,
+names to **OpenRouter, which routes it to TypeSafe; both act as third-party
+processors**. It does not send YNAB UUIDs,
 balances, goals, cleared/approved flags, or raw payee history. The tool uses the
-pinned `jev-1.13.0` model. Its published price at the time of writing is $0.042
+pinned `typesafe/jev-1.13` model through OpenRouter's System One endpoint. Its published price at the time of writing is $0.042
 per million input tokens with output free; provider pricing and limits can
 change. Each tool response reports preflight estimates, actual token usage,
 and the projected cost. The implementation defaults to 20 rows, caps calls at

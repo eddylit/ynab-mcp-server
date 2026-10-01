@@ -5,7 +5,7 @@ import { getErrorMessage } from "./errorUtils.js";
 import { contentFingerprint, getEligibleCategories, isTransfer } from "./SuggestCategoriesTool.js";
 
 export const name = "ynab_apply_category_suggestions";
-export const description = "Applies explicitly supplied category suggestions after refetching and verifying every transaction fingerprint. Never auto-applies, approves, or calls TypeSafe. Supports dry-run and returns a pre-write undo manifest.";
+export const description = "Applies explicitly supplied category suggestions after refetching and verifying every transaction fingerprint. Never auto-applies, approves, or calls Jev. Supports dry-run and returns a pre-write undo manifest.";
 export const inputSchema = {
   planId: z.string().optional().describe("The plan ID (optional; budgetId is a deprecated alias)"),
   budgetId: z.string().optional().describe("Deprecated alias of planId"),

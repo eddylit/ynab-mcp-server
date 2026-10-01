@@ -98,7 +98,7 @@ describe("worker MCP handler", () => {
 
     const enabled = await call(
       { jsonrpc: "2.0", id: 4, method: "tools/list" },
-      { YNAB_AI_CATEGORIZATION: "true", TYPESAFE_API_KEY: "typesafe-secret", YNAB_READ_ONLY: "true" },
+      { YNAB_AI_CATEGORIZATION: "true", OPENROUTER_API_KEY: "openrouter-secret", YNAB_READ_ONLY: "true" },
     );
     const enabledResult = await readResult(enabled);
     const names = enabledResult.result.tools.map((t: { name: string }) => t.name);

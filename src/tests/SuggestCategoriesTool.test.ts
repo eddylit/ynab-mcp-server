@@ -122,14 +122,14 @@ describe("SuggestCategoriesTool", () => {
   beforeEach(() => {
     process.env.YNAB_BUDGET_ID = "budget-id";
     process.env.YNAB_AI_CATEGORIZATION = "true";
-    process.env.TYPESAFE_API_KEY = "typesafe-test-secret";
+    process.env.OPENROUTER_API_KEY = "openrouter-test-secret";
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     delete process.env.YNAB_AI_CATEGORIZATION;
-    delete process.env.TYPESAFE_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
   });
 
   it("is disabled unless both the explicit flag and API key are present", async () => {
@@ -179,7 +179,7 @@ describe("SuggestCategoriesTool", () => {
     }]);
   });
 
-  it("drops deleted rows, returns deterministic skip reasons, and sends only eligible rows to TypeSafe", async () => {
+  it("drops deleted rows, returns deterministic skip reasons, and sends only eligible rows to Jev", async () => {
     const candidates = [
       transaction("deleted", { deleted: true }),
       transaction("row-transfer", { transfer_account_id: "other-account" }),
@@ -341,8 +341,8 @@ describe("SuggestCategoriesTool", () => {
     expect(output).toMatchObject({
       success: true,
       dry_run: true,
-      requested_model: "jev-1.13.0",
-      model: "jev-1.13.0",
+      requested_model: "typesafe/jev-1.13",
+      model: "typesafe/jev-1.13",
       provider_calls: 1,
       thresholds: { provisional: true, suggested_at_or_above: 0.8, needs_review_at_or_above: 0.5 },
       usage: { input_tokens: 1234, output_tokens: 56, projected_cost_usd: 0.000051828 },
@@ -360,12 +360,12 @@ describe("SuggestCategoriesTool", () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     const requestBody = String(init.body);
-    expect(url).toBe("https://api.typesafe.ai/v1/systemone");
-    expect(init.headers.authorization).toBe("Bearer typesafe-test-secret");
+    expect(url).toBe("https://openrouter.ai/api/v1/systemone");
+    expect(init.headers.authorization).toBe("Bearer openrouter-test-secret");
     expect(requestBody).not.toContain("account-uuid");
     expect(requestBody).not.toContain("payee-uuid");
     expect(requestBody).not.toContain("cat-a");
-    expect(requestBody).not.toContain("typesafe-test-secret");
+    expect(requestBody).not.toContain("openrouter-test-secret");
     expect(requestBody).not.toContain("balance");
     expect(requestBody).not.toContain("approved");
     expect(requestBody).toContain("MARKET #123");
@@ -387,12 +387,12 @@ describe("SuggestCategoriesTool", () => {
       {
         transaction_id: "wrong-winner",
         status: "failed",
-        error: "TypeSafe returned a missing or malformed Choice answer",
+        error: "Jev returned a missing or malformed Choice answer",
       },
       {
         transaction_id: "invalid-total",
         status: "failed",
-        error: "TypeSafe returned a missing or malformed Choice answer",
+        error: "Jev returned a missing or malformed Choice answer",
       },
     ]);
   });
@@ -406,7 +406,7 @@ describe("SuggestCategoriesTool", () => {
     expect(output.success).toBe(true);
     expect(output.transactions).toHaveLength(2);
     expect(output.transactions.every((row: any) => row.status === "failed")).toBe(true);
-    expect(output.transactions[0].error).toBe("TypeSafe request failed with HTTP 529");
+    expect(output.transactions[0].error).toBe("OpenRouter Jev request failed with HTTP 529");
     expect(output.provider_calls).toBe(1);
     expect(api.transactions).not.toHaveProperty("updateTransaction");
   });

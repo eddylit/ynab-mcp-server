@@ -6,7 +6,7 @@ import { getErrorMessage } from "./errorUtils.js";
 import { toDollars } from "./money.js";
 
 export const name = "ynab_suggest_categories";
-export const description = "Previews category suggestions for unapproved, uncategorized ordinary outflows. Approved, reconciled, transfer, split, inflow, categorized, and YNAB balance-adjustment rows are ineligible for history-rule suggestions or TypeSafe Jev processing. A disagreement between the history plurality and Jev always requires review. Never writes to YNAB.";
+export const description = "Previews category suggestions for unapproved, uncategorized ordinary outflows. Approved, reconciled, transfer, split, inflow, categorized, and YNAB balance-adjustment rows are ineligible for history-rule suggestions or Jev processing via OpenRouter. A disagreement between the history plurality and Jev always requires review. Never writes to YNAB.";
 export const inputSchema = {
   planId: z.string().optional().describe("The plan ID (optional, defaults to YNAB_PLAN_ID; budgetId is a deprecated alias)"),
   budgetId: z.string().optional().describe("Deprecated alias of planId (still accepted)"),
@@ -21,7 +21,7 @@ interface SuggestCategoriesInput {
   limit?: number;
 }
 
-export const PINNED_MODEL = "jev-1.13.0";
+export const PINNED_MODEL = "typesafe/jev-1.13";
 export const PUBLISHED_INPUT_PRICE_PER_MILLION_USD = 0.042;
 export const PROVISIONAL_SUGGEST_CONFIDENCE = 0.80;
 export const PROVISIONAL_REVIEW_CONFIDENCE = 0.50;
@@ -32,8 +32,9 @@ export const MAX_CHOICE_OPTIONS = 255;
 export const MAX_ESTIMATED_REQUEST_TOKENS = 60_000;
 export const MAX_ESTIMATED_STATE_AND_QUESTION_TOKENS = 30_000;
 export const MAX_PROJECTED_COST_PER_CALL_USD = 0.01;
-const TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone";
-const TYPESAFE_TIMEOUT_MS = 10_000;
+/** OpenRouter's TypeSafe-compatible System One endpoint for Jev, authenticated with an OpenRouter key. */
+const JEV_URL = "https://openrouter.ai/api/v1/systemone";
+const JEV_TIMEOUT_MS = 10_000;
 const HISTORY_MAX_ROWS = 50;
 
 export interface EligibleCategory {
@@ -132,7 +133,7 @@ interface Preflight {
 
 
 export function isCategorySuggestionEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return env.YNAB_AI_CATEGORIZATION === "true" && Boolean(env.TYPESAFE_API_KEY);
+  return env.YNAB_AI_CATEGORIZATION === "true" && Boolean(env.OPENROUTER_API_KEY);
 }
 
 function normalizeSystemName(value: string): string {
@@ -465,7 +466,7 @@ function buildTypeSafeRequest(
   return { state: modelState(transactions, accountsById, categories), model: PINNED_MODEL, questions };
 }
 
-/** A conservative UTF-8 byte bound; TypeSafe returns authoritative usage after the call. */
+/** A conservative UTF-8 byte bound; OpenRouter returns authoritative usage after the call. */
 export function preflightTypeSafeRequest(body: ReturnType<typeof buildTypeSafeRequest>): Preflight {
   const encodedLength = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
   const estimatedInputTokens = encodedLength(body);
@@ -484,7 +485,7 @@ export function preflightTypeSafeRequest(body: ReturnType<typeof buildTypeSafeRe
     estimatedStateAndLongestQuestionTokens,
     projectedCostUsd,
     allowed: reasons.length === 0,
-    error: reasons.length > 0 ? `TypeSafe preflight refused the batch: ${reasons.join("; ")}` : undefined,
+    error: reasons.length > 0 ? `Jev preflight refused the batch: ${reasons.join("; ")}` : undefined,
   };
 }
 
@@ -515,11 +516,11 @@ function isChoiceAnswer(value: unknown, validKeys: Set<string>): value is Choice
     answer.probabilities[answer.choice] >= highestProbability - tolerance;
 }
 
-async function callTypeSafe(body: ReturnType<typeof buildTypeSafeRequest>, apiKey: string): Promise<TypeSafeResponse> {
+async function callJev(body: ReturnType<typeof buildTypeSafeRequest>, apiKey: string): Promise<TypeSafeResponse> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TYPESAFE_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), JEV_TIMEOUT_MS);
   try {
-    const response = await fetch(TYPESAFE_URL, {
+    const response = await fetch(JEV_URL, {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,
@@ -529,7 +530,7 @@ async function callTypeSafe(body: ReturnType<typeof buildTypeSafeRequest>, apiKe
       signal: controller.signal,
     });
     if (!response.ok) {
-      throw new Error(`TypeSafe request failed with HTTP ${response.status}`);
+      throw new Error(`OpenRouter Jev request failed with HTTP ${response.status}`);
     }
     const parsed = await response.json() as Partial<TypeSafeResponse>;
     if (
@@ -540,7 +541,7 @@ async function callTypeSafe(body: ReturnType<typeof buildTypeSafeRequest>, apiKe
       !Number.isFinite(parsed.usage.input_tokens) ||
       !Number.isFinite(parsed.usage.output_tokens)
     ) {
-      throw new Error("TypeSafe returned a malformed response");
+      throw new Error("OpenRouter Jev returned a malformed response");
     }
     return parsed as TypeSafeResponse;
   } finally {
@@ -645,10 +646,10 @@ export async function execute(input: SuggestCategoriesInput, api: ynab.API) {
     if (!isCategorySuggestionEnabled()) {
       return toolResponse({
         success: false,
-        error: "Category suggestions are disabled. Set TYPESAFE_API_KEY and YNAB_AI_CATEGORIZATION=true to opt in.",
+        error: "Category suggestions are disabled. Set OPENROUTER_API_KEY and YNAB_AI_CATEGORIZATION=true to opt in.",
       });
     }
-    const apiKey = process.env.TYPESAFE_API_KEY as string;
+    const apiKey = process.env.OPENROUTER_API_KEY as string;
     const budgetId = resolvePlanId(input);
     const candidates = await loadCandidates(input, budgetId, api);
 
@@ -827,7 +828,7 @@ export async function execute(input: SuggestCategoriesInput, api: ynab.API) {
       let response: TypeSafeResponse;
       try {
         providerCalls += 1;
-        response = await callTypeSafe(body, apiKey);
+        response = await callJev(body, apiKey);
       } catch (error) {
         const message = getErrorMessage(error);
         for (const transaction of batch) {
@@ -850,7 +851,7 @@ export async function execute(input: SuggestCategoriesInput, api: ynab.API) {
         if (!isChoiceAnswer(answer, validKeys)) {
           outputRows.push(failedRow(
             transaction.id,
-            "TypeSafe returned a missing or malformed Choice answer",
+            "Jev returned a missing or malformed Choice answer",
             transaction,
             fingerprints.get(transaction.id),
             historyByTransactionId.get(transaction.id),
@@ -864,7 +865,7 @@ export async function execute(input: SuggestCategoriesInput, api: ynab.API) {
         if (answer.choice !== "leave_uncategorized" && !selectedCategory) {
           outputRows.push(failedRow(
             transaction.id,
-            "TypeSafe returned an unknown category key",
+            "Jev returned an unknown category key",
             transaction,
             fingerprints.get(transaction.id),
             historyByTransactionId.get(transaction.id),
