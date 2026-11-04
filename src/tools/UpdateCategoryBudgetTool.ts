@@ -2,10 +2,10 @@ import { resolvePlanId } from "./planId.js";
 import { z } from "zod";
 import * as ynab from "ynab";
 import { getErrorMessage } from "./errorUtils.js";
-import { toDollars, toMilliunits } from "./money.js";
+import { formatAmount, getDecimalDigits, toDollars, toMilliunits } from "./money.js";
 
 export const name = "ynab_update_category_budget";
-export const description = "Updates the budgeted amount for a category in a specific month. Use this to allocate funds to categories or move money between categories.";
+export const description = "Sets the total budgeted amount for one category in a specific month (not an increment). To move money between categories, use ynab_move_money instead.";
 export const inputSchema = {
   planId: z.string().optional().describe("The plan ID (optional, defaults to YNAB_PLAN_ID; budgetId is a deprecated alias)"),
   budgetId: z.string().optional().describe("Deprecated alias of planId (still accepted)"),
@@ -28,16 +28,19 @@ export async function execute(input: UpdateCategoryBudgetInput, api: ynab.API) {
     const budgetId = resolvePlanId(input);
     const budgetedMilliunits = toMilliunits(input.budgeted);
 
-    const response = await api.categories.updateMonthCategory(
-      budgetId,
-      input.month,
-      input.categoryId,
-      {
-        category: {
-          budgeted: budgetedMilliunits,
-        },
-      }
-    );
+    const [response, decimalDigits] = await Promise.all([
+      api.categories.updateMonthCategory(
+        budgetId,
+        input.month,
+        input.categoryId,
+        {
+          category: {
+            budgeted: budgetedMilliunits,
+          },
+        }
+      ),
+      getDecimalDigits(api, budgetId),
+    ]);
 
     if (!response.data.category) {
       throw new Error("Failed to update category - no category data returned");
@@ -53,11 +56,11 @@ export async function execute(input: UpdateCategoryBudgetInput, api: ynab.API) {
           category: {
             id: category.id,
             name: category.name,
-            budgeted: toDollars(category.budgeted),
-            activity: toDollars(category.activity),
-            balance: toDollars(category.balance),
+            budgeted: toDollars(category.budgeted, decimalDigits),
+            activity: toDollars(category.activity, decimalDigits),
+            balance: toDollars(category.balance, decimalDigits),
           },
-          message: `Successfully updated ${category.name} budget to $${toDollars(category.budgeted).toFixed(2)}`,
+          message: `Successfully updated ${category.name} budget to $${formatAmount(toDollars(category.budgeted, decimalDigits), decimalDigits)}`,
         }, null, 2),
       }],
     };

@@ -5,9 +5,12 @@ node_modules
 logs
 data
 coverage
-.claude
+.claude/*
+!.claude/skills/
 dist
 
 .dev.vars
 wrangler.jsonc
 .wrangler/
+# Backups written by scripts/cloudflare-access.mjs
+.cloudflare-access/

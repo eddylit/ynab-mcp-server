@@ -6,17 +6,34 @@ export interface WorkerEnv {
   YNAB_PLAN_ID?: string;
   /** Deprecated but still accepted compatibility alias; no removal date. */
   YNAB_BUDGET_ID?: string;
-  /** GitHub OAuth app credentials, used only to identify the caller. */
-  GITHUB_CLIENT_ID: string;
-  GITHUB_CLIENT_SECRET: string;
-  /** The single GitHub login allowed to use this server. */
-  ALLOWED_GITHUB_LOGIN: string;
-  /** Set to "true" to expose only the read-only tools. */
+  /**
+   * Cloudflare Access team domain (`<team>.cloudflareaccess.com`) and application
+   * audience tag. Setting any `CF_ACCESS_*` value replaces the GitHub OAuth
+   * below, and Access mode needs these two plus `CF_ACCESS_ALLOWED_EMAIL`.
+   */
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
+  /** The single email allowed to use this server. Required in Access mode. */
+  CF_ACCESS_ALLOWED_EMAIL?: string;
+  /** GitHub OAuth app credentials, used only to identify the caller. Required for GitHub sign-in. */
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+  /** The single GitHub login allowed to use this server. Required for GitHub sign-in. */
+  ALLOWED_GITHUB_LOGIN?: string;
+  /**
+   * Optional exact OAuth redirect URIs, separated by commas or whitespace, that
+   * MCP clients may receive grants at. http loopback redirects are always
+   * allowed. May be a plain var or a secret. GitHub sign-in only.
+   */
+  ALLOWED_REDIRECT_URIS?: string;
+  /** Set to "true" to omit tools that write to YNAB. */
   YNAB_READ_ONLY?: string;
   /** OpenRouter API key used to call TypeSafe Jev for the optional category suggestion preview. */
   OPENROUTER_API_KEY?: string;
   /** Set to "true" as a separate opt-in for category suggestions. */
   YNAB_AI_CATEGORIZATION?: string;
+  /** Set to "true" to send each category's most frequent payee names to the model. */
+  YNAB_AI_TYPICAL_PAYEES?: string;
 
   /**
    * Calendar reminder. Absent means the scheduled nag stays switched off.
@@ -32,4 +49,19 @@ export interface WorkerEnv {
    */
   NAG_HOUR_MIN?: string;
   NAG_HOUR_MAX?: string;
+
+  /**
+   * Auto-budget service. Absent database means the service stays off and its
+   * tools are not registered.
+   */
+  AUTOBUDGET_DB?: D1Database;
+  /** "off" (default) or "shadow". */
+  AUTOBUDGET_MODE?: string;
+  /** IANA zone for the daily digest. Defaults to NAG_TIMEZONE, then America/Los_Angeles. */
+  AUTOBUDGET_TIMEZONE?: string;
+  /** Local hour (0-23) the daily digest is sent. Defaults to 8. */
+  AUTOBUDGET_DIGEST_HOUR?: string;
+  /** Pushover credentials for alerts and the digest. Secrets; absent means nothing is sent. */
+  PUSHOVER_APP_TOKEN?: string;
+  PUSHOVER_USER_KEY?: string;
 }

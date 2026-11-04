@@ -116,7 +116,6 @@ describe("tool registration", () => {
     // Spot-check the specific hints called out for this tool set.
     expect(registered.get("ynab_delete_transaction")?.config.annotations.destructiveHint).toBe(true);
     expect(registered.get("ynab_create_transaction")?.config.annotations.destructiveHint).toBe(false);
-    expect(registered.get("ynab_approve_transaction")?.config.annotations.idempotentHint).toBe(true);
     expect(registered.get("ynab_update_transaction")?.config.annotations.idempotentHint).toBe(true);
     expect(registered.get("ynab_bulk_approve_transactions")?.config.annotations.idempotentHint).toBe(true);
     expect(registered.get("ynab_update_category_budget")?.config.annotations.idempotentHint).toBe(true);
@@ -124,6 +123,14 @@ describe("tool registration", () => {
     expect(registered.get("ynab_move_money")?.config.annotations.idempotentHint).toBe(false);
     expect(registered.get("ynab_auto_assign")?.config.annotations.idempotentHint).toBe(false);
     expect(registered.get("ynab_import_transactions")?.config.annotations.idempotentHint).toBe(false);
+    expect(registered.get("ynab_balance_forecast")?.config.annotations.readOnlyHint).toBe(true);
+    expect(registered.get("ynab_detect_recurring")?.config.annotations).toEqual({
+      title: "Detect Recurring",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
   });
 
   it("rejects ynab_create_transaction input missing both accountId and accountName", () => {
@@ -257,7 +264,7 @@ describe("tool registration", () => {
     expect(api.months.getPlanMonth).toHaveBeenCalledWith(expected, "current");
   });
 
-  it("successfully calls canonical and legacy plan tool registrations", async () => {
+  it("successfully calls the plan tool registrations", async () => {
     vi.stubEnv("YNAB_API_TOKEN", "test-token");
     const api = {
       plans: { getPlans: vi.fn().mockResolvedValue({ data: { plans: [] } }) },
@@ -281,24 +288,20 @@ describe("tool registration", () => {
     };
     const registered = register(api as unknown as ynab.API);
 
-    for (const name of ["ynab_list_plans", "ynab_list_budgets"]) {
-      const result = await registered.get(name)!.callback({});
-      expect(result.isError, name).toBeUndefined();
-    }
-    for (const name of ["ynab_plan_summary", "ynab_budget_summary"]) {
-      const result = await registered.get(name)!.callback({ planId: "test-plan" });
-      expect(result.isError, name).toBeUndefined();
-    }
+    const listResult = await registered.get("ynab_list_plans")!.callback({});
+    expect(listResult.isError).toBeUndefined();
+    const summaryResult = await registered.get("ynab_plan_summary")!.callback({ planId: "test-plan" });
+    expect(summaryResult.isError).toBeUndefined();
 
-    expect(api.plans.getPlans).toHaveBeenCalledTimes(2);
-    expect(api.accounts.getAccounts).toHaveBeenCalledTimes(2);
+    expect(api.plans.getPlans).toHaveBeenCalledTimes(1);
+    expect(api.accounts.getAccounts).toHaveBeenCalledTimes(1);
   });
 
-  it("marks the registered list-budgets missing-token failure as isError", async () => {
+  it("marks the registered list-plans missing-token failure as isError", async () => {
     vi.stubEnv("YNAB_API_TOKEN", "");
     const registered = register();
 
-    const result = await registered.get("ynab_list_budgets")!.callback({});
+    const result = await registered.get("ynab_list_plans")!.callback({});
 
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text)).toEqual({
@@ -383,5 +386,206 @@ describe("tool registration", () => {
     } finally {
       tools.pop();
     }
+  });
+});
+
+describe("a configured plan the token cannot see", () => {
+  const notFound = { error: { id: "404.2", name: "resource_not_found", detail: "Resource not found" } };
+
+  function apiWithPlans(plans: Array<{ id: string; name: string }>) {
+    return {
+      plans: { getPlans: vi.fn().mockResolvedValue({ data: { plans } }) },
+      accounts: { getAccounts: vi.fn().mockRejectedValue(notFound) },
+    } as unknown as ynab.API;
+  }
+
+  it("is named in the error of a call that relied on it, with the plans the token can see", async () => {
+    vi.stubEnv("YNAB_PLAN_ID", "configured-plan");
+    const api = apiWithPlans([{ id: "real-plan", name: "Household" }]);
+    const registered = register(api);
+
+    const result = await registered.get("ynab_list_accounts")!.callback({});
+    expect(result.isError).toBe(true);
+    const { error, plan_visibility_error: planVisibilityError } = JSON.parse(result.content[0].text);
+    expect(error).toBe("Resource not found");
+    expect(planVisibilityError).toContain("The configured plan configured-plan (YNAB_PLAN_ID) is not one of the plans this YNAB token can access");
+    expect(planVisibilityError).toContain('"Household" (real-plan)');
+
+    await registered.get("ynab_list_accounts")!.callback({});
+    expect(api.plans.getPlans).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves a partial-write failure while attaching the plan visibility explanation", async () => {
+    vi.stubEnv("YNAB_PLAN_ID", "configured-plan");
+    const entry = {
+      title: "Partial failure tool test",
+      writes: true,
+      module: {
+        name: "partial_failure_tool_test",
+        description: "test",
+        inputSchema: { planId: z.string().optional().describe("Plan ID") },
+        async execute() {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                success: false,
+                partial: true,
+                assigned: [{ id: "funded" }],
+                not_assigned: [{ id: "unfunded" }],
+                recovery: "Restore the source category.",
+              }),
+            }],
+          };
+        },
+      },
+    };
+    tools.push(entry);
+
+    try {
+      const result = await register(apiWithPlans([])).get(entry.module.name)!.callback({});
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toEqual({
+        success: false,
+        partial: true,
+        assigned: [{ id: "funded" }],
+        not_assigned: [{ id: "unfunded" }],
+        recovery: "Restore the source category.",
+        plan_visibility_error: expect.stringContaining("configured-plan"),
+      });
+    } finally {
+      tools.pop();
+    }
+  });
+
+  it("revalidates plan visibility after access changes", async () => {
+    vi.stubEnv("YNAB_PLAN_ID", "configured-plan");
+    const plans = [{ id: "real-plan", name: "Household" }];
+    const api = apiWithPlans(plans);
+    const registered = register(api);
+
+    const missing = await registered.get("ynab_list_accounts")!.callback({});
+    expect(JSON.parse(missing.content[0].text).plan_visibility_error).toContain("is not one of the plans");
+
+    plans.splice(0, plans.length, { id: "configured-plan", name: "Restored" });
+    const restored = await registered.get("ynab_list_accounts")!.callback({});
+    expect(JSON.parse(restored.content[0].text).error).toBe("Resource not found");
+
+    plans.splice(0, plans.length, { id: "real-plan", name: "Household" });
+    const revoked = await registered.get("ynab_list_accounts")!.callback({});
+    expect(JSON.parse(revoked.content[0].text).plan_visibility_error).toContain("is not one of the plans");
+    expect(api.plans.getPlans).toHaveBeenCalledTimes(3);
+  });
+
+  it("leaves the error alone when the plan is visible or was passed explicitly", async () => {
+    vi.stubEnv("YNAB_PLAN_ID", "real-plan");
+    const visible = await register(apiWithPlans([{ id: "real-plan", name: "Household" }]))
+      .get("ynab_list_accounts")!.callback({});
+    expect(JSON.parse(visible.content[0].text).error).toBe("Resource not found");
+
+    vi.stubEnv("YNAB_PLAN_ID", "configured-plan");
+    const api = apiWithPlans([]);
+    const explicit = await register(api).get("ynab_list_accounts")!.callback({ planId: "other-plan" });
+    expect(JSON.parse(explicit.content[0].text).error).toBe("Resource not found");
+    expect(api.plans.getPlans).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the original error when the plan list cannot be read", async () => {
+    vi.stubEnv("YNAB_PLAN_ID", "configured-plan");
+    const api = {
+      plans: { getPlans: vi.fn().mockRejectedValue(new Error("offline")) },
+      accounts: { getAccounts: vi.fn().mockRejectedValue(notFound) },
+    } as unknown as ynab.API;
+    const registered = register(api);
+
+    for (let i = 0; i < 2; i++) {
+      const result = await registered.get("ynab_list_accounts")!.callback({});
+      expect(JSON.parse(result.content[0].text).error).toBe("Resource not found");
+    }
+    // A failed lookup is not cached.
+    expect(api.plans.getPlans).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("removed aliases", () => {
+  it.each([
+    ["ynab_list_budgets", "ynab_list_plans"],
+    ["ynab_budget_summary", "ynab_plan_summary"],
+    ["ynab_get_unapproved_transactions", "ynab_get_transactions"],
+    ["ynab_approve_transaction", "ynab_bulk_approve_transactions"],
+  ])("no longer registers %s, only %s", (alias, replacement) => {
+    const registered = register();
+    expect(registered.has(alias)).toBe(false);
+    expect(registered.has(replacement)).toBe(true);
+  });
+
+  it("lists unapproved transactions through ynab_get_transactions", async () => {
+    vi.stubEnv("YNAB_API_TOKEN", "test-token");
+    const rows = Array.from({ length: 150 }, (_, i) => ({
+      id: `txn-${i}`,
+      date: "2024-01-01",
+      amount: -1000,
+      approved: false,
+      cleared: "uncleared",
+      deleted: false,
+      transfer_account_id: null,
+      transfer_transaction_id: null,
+      matched_transaction_id: `match-${i}`,
+      import_id: `import-${i}`,
+    }));
+    const api = {
+      transactions: { getTransactions: vi.fn().mockResolvedValue({ data: { transactions: rows } }) },
+      plans: { getPlanSettingsById: vi.fn().mockRejectedValue(new Error("no settings")) },
+    };
+    const registered = register(api as unknown as ynab.API);
+
+    const result = await registered.get("ynab_get_transactions")!.callback({
+      planId: "plan-1",
+      sinceDate: "2024-01-01",
+      type: "unapproved",
+      limit: 1000,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(api.transactions.getTransactions).toHaveBeenCalledWith("plan-1", "2024-01-01", undefined, "unapproved");
+    const body = JSON.parse(result.content[0].text);
+    expect(body.transaction_count).toBe(150);
+    expect(body.transactions[0]).toMatchObject({
+      id: "txn-0",
+      amount: -1,
+      transfer_transaction_id: null,
+      matched_transaction_id: "match-0",
+      import_id: "import-0",
+    });
+  });
+
+  it.each([
+    [{}, true],
+    [{ approved: false }, false],
+  ])("approves a single transaction through ynab_bulk_approve_transactions with %j", async (extra, approved) => {
+    vi.stubEnv("YNAB_API_TOKEN", "test-token");
+    const api = {
+      transactions: {
+        updateTransactions: vi.fn().mockResolvedValue({
+          data: { transactions: [{ id: "txn-1", date: "2024-01-01", amount: -1000, payee_name: "Shop", approved }] },
+        }),
+      },
+      plans: { getPlanSettingsById: vi.fn().mockRejectedValue(new Error("no settings")) },
+    };
+    const registered = register(api as unknown as ynab.API);
+    const callback = registered.get("ynab_bulk_approve_transactions")!;
+    const input = (callback.config.inputSchema as z.ZodTypeAny).parse({ budgetId: "plan-1", transactionIds: ["txn-1"], ...extra });
+
+    const result = await callback.callback(input);
+
+    expect(result.isError).toBeUndefined();
+    expect(api.transactions.updateTransactions).toHaveBeenCalledWith("plan-1", {
+      transactions: [{ id: "txn-1", approved }],
+    });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      success: true,
+      ...(approved ? { approved_count: 1 } : { unapproved_count: 1 }),
+      transactions: [{ id: "txn-1", approved }],
+    });
   });
 });

@@ -3,6 +3,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { createServer, McpApiHandler } from "../worker/mcp.js";
 import { tools } from "../registry.js";
 import type { WorkerEnv } from "../worker/env.js";
+import { createTestD1 } from "./stubs/d1.js";
 
 const env: WorkerEnv = {
   YNAB_API_TOKEN: "test-token",
@@ -45,6 +46,7 @@ const initialize = {
 describe("worker MCP handler", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   it("mirrors plan environment aliases without resolving them", async () => {
@@ -66,6 +68,18 @@ describe("worker MCP handler", () => {
     await bothServer.close();
   });
 
+  it("mirrors the typical-payees opt-in and clears it when the binding is absent", async () => {
+    vi.stubEnv("YNAB_AI_TYPICAL_PAYEES", "stale");
+
+    const optedIn = createServer({ ...env, YNAB_AI_TYPICAL_PAYEES: "true" });
+    expect(process.env.YNAB_AI_TYPICAL_PAYEES).toBe("true");
+    await optedIn.close();
+
+    const optedOut = createServer(env);
+    expect(process.env.YNAB_AI_TYPICAL_PAYEES).toBeUndefined();
+    await optedOut.close();
+  });
+
   it("responds to initialize over HTTP", async () => {
     const response = await call(initialize);
     expect(response.status).toBe(200);
@@ -73,7 +87,7 @@ describe("worker MCP handler", () => {
     const result = await readResult(response);
     expect(result.result.serverInfo).toEqual({
       name: "ynab-mcp-server",
-      version: "0.3.0",
+      version: "0.8.0",
     });
   });
 
@@ -83,9 +97,60 @@ describe("worker MCP handler", () => {
 
     const names = result.result.tools.map((t: { name: string }) => t.name);
     expect(names).toHaveLength(tools.filter((tool) => !tool.requiresAiCategorization).length);
-    expect(names).toContain("ynab_budget_summary");
+    expect(names).toContain("ynab_plan_summary");
+    expect(names).not.toContain("ynab_budget_summary");
     expect(names).toContain("ynab_create_transaction");
     expect(names).not.toContain("ynab_suggest_categories");
+  });
+
+  it("answers concurrent requests that reuse a JSON-RPC id with their own results", async () => {
+    const listTools = { jsonrpc: "2.0", id: 0, method: "tools/list" };
+    const [full, readOnly] = await Promise.all([
+      call(listTools).then(readResult),
+      call(listTools, { YNAB_READ_ONLY: "true" }).then(readResult),
+    ]);
+
+    const names = (result: any) => result.result.tools.map((t: { name: string }) => t.name);
+    expect(names(full)).toContain("ynab_create_transaction");
+    expect(names(readOnly)).not.toContain("ynab_create_transaction");
+  });
+
+  it("rejects a request body over the configured 1 MiB limit", async () => {
+    const response = await call({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/list",
+      params: { padding: "x".repeat(1024 * 1024) },
+    });
+    expect(response.status).toBe(413);
+  });
+
+  it("rejects oversized tool arguments before calling YNAB", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await call({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "ynab_create_transaction",
+        arguments: {
+          planId: "plan",
+          accountId: "account",
+          date: "2026-01-01",
+          amount: 0,
+          payeeName: "Payee",
+          subtransactions: Array.from({ length: 20_000 }, () => ({ amount: 0 })),
+        },
+      },
+    });
+    const result = await readResult(response);
+
+    expect(response.status).toBe(200);
+    expect(result.result).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("maximum of 10000 elements") }],
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("exposes category suggestions only with both opt-in settings", async () => {
@@ -114,8 +179,20 @@ describe("worker MCP handler", () => {
     const result = await readResult(response);
 
     const names = result.result.tools.map((t: { name: string }) => t.name);
-    expect(names).toContain("ynab_budget_summary");
+    expect(names).toContain("ynab_plan_summary");
+    expect(names).not.toContain("ynab_budget_summary");
     expect(names).not.toContain("ynab_create_transaction");
     expect(names).not.toContain("ynab_delete_transaction");
+  });
+
+  it("serves the auto-budget tools only with their database bound, read-only mode included", async () => {
+    const autobudget = ["ynab_autobudget_status", "ynab_autobudget_plan", "ynab_autobudget_pause"];
+    const names = async (overrides: Partial<WorkerEnv>) =>
+      (await readResult(await call({ jsonrpc: "2.0", id: 6, method: "tools/list" }, overrides)))
+        .result.tools.map((t: { name: string }) => t.name);
+
+    expect(await names({})).not.toContain("ynab_autobudget_status");
+    const bound = await names({ AUTOBUDGET_DB: createTestD1(), YNAB_READ_ONLY: "true" });
+    expect(bound).toEqual(expect.arrayContaining(autobudget));
   });
 });

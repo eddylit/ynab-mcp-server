@@ -27,10 +27,15 @@ jobs:
     
     - name: Run tests
       run: npm test
+
+    - name: Typecheck
+      run: npm run typecheck
     
     - name: Upload coverage reports
       if: matrix.node-version == '22.x'
-      uses: codecov/codecov-action@v3
+      continue-on-error: true
+      uses: codecov/codecov-action@v7
       with:
-        file: ./coverage/coverage-final.json
+        files: ./coverage/coverage-final.json
         fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}

@@ -23,8 +23,11 @@ It runs two ways from one codebase:
   claude.ai as a custom connector, so it works from the web and the mobile app
   with your computer switched off. See [DEPLOY.md](./DEPLOY.md).
 
-Both entry points register the same tools from `src/registry.ts`, so a tool
-written once is available in both.
+Both entry points register the shared tools from `src/registry.ts`. The Worker
+can also run an optional scheduled auto-budget service that records what it
+would categorize, approve and assign without changing your plan and delivers
+spending alerts; see
+[Auto-budget service](./DEPLOY.md#auto-budget-service-optional).
 
 Other providers:
 
@@ -52,6 +55,14 @@ Environment variables:
 | `YNAB_PLAN_ID` | no | Default plan, so tools can omit `planId`. Find it with `ynab_list_plans`. |
 | `OPENROUTER_API_KEY` | no | Operator-owned OpenRouter API key, used to call TypeSafe Jev. Required, but not sufficient, to enable category suggestions. |
 | `YNAB_AI_CATEGORIZATION` | no | Set to `"true"` together with `OPENROUTER_API_KEY` to expose the opt-in suggestion tool. |
+| `YNAB_AI_TYPICAL_PAYEES` | no | Set to `"true"` to send each category's most frequent payee names from the last 12 months with each model request. Off by default because it discloses aggregated payee history to OpenRouter and TypeSafe. |
+| `YNAB_READ_ONLY` | no | Set to `"true"` (case-insensitive; surrounding whitespace is ignored) to remove tools that write to YNAB, in both the stdio server and the Worker. |
+| `ALLOWED_GITHUB_LOGIN` | no | Worker only. The single GitHub login allowed through [GitHub sign-in](./DEPLOY.md#github-sign-in). Required for GitHub sign-in. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | no | Worker only. The GitHub OAuth app's credentials. Required for GitHub sign-in. |
+| `ALLOWED_REDIRECT_URIS` | no | Worker only. Exact OAuth callback URIs that GitHub sign-in may deliver grants to. See [Restricting redirects](./DEPLOY.md#restricting-redirects-optional). Must be unset with Cloudflare Access. |
+| `CF_ACCESS_TEAM_DOMAIN` | no | Worker only. Your Cloudflare Access team domain (`<team>.cloudflareaccess.com`). Setting any `CF_ACCESS_*` value replaces GitHub sign-in with [Cloudflare Access](./DEPLOY.md#cloudflare-access), which needs all three. |
+| `CF_ACCESS_AUD` | no | Worker only. The Access application's Audience (AUD) tag. |
+| `CF_ACCESS_ALLOWED_EMAIL` | no | Worker only. The single email allowed through Access. Any other identity, including a service token, is refused. |
 
 ### Local: Claude Desktop / Claude Code
 
@@ -77,7 +88,9 @@ claude.ai or the Claude mobile app, deploy `src/worker/` to Cloudflare Workers
 and add it as a custom connector. [DEPLOY.md](./DEPLOY.md) has the full walk
 through; the shape of it:
 
-1. Copy `wrangler.example.jsonc` to the git-ignored `wrangler.jsonc`, run
+1. Copy `wrangler.example.jsonc` to the git-ignored `wrangler.jsonc`, remove
+   the optional placeholder `AUTOBUDGET_DB` block unless you are configuring
+   the [auto-budget service](./DEPLOY.md#auto-budget-service-optional), run
    `npx wrangler login`, then create the `OAUTH_KV` namespace
 2. `npm run deploy` once to learn your `*.workers.dev` hostname
 3. Create a GitHub OAuth app whose callback is `https://<host>/callback`
@@ -99,6 +112,21 @@ overrides the optional `YNAB_PLAN_ID` default. Any GitHub account other than
 and delete transactions—an unauthenticated endpoint would grant access to those
 plans to anyone who found the URL.
 
+The Worker is not tied to Claude. Any MCP client that supports remote servers
+with OAuth can connect, for example Claude (claude.ai, desktop, and mobile),
+ChatGPT connectors, Claude Code, or the MCP Inspector. Because clients register
+themselves, every permitted sign-in shows an approval page naming the client
+and the exact address the grant will be sent to; approve only a sign-in you
+just started. To restrict which clients can connect at all, set
+`ALLOWED_REDIRECT_URIS` to their exact callback URIs (loopback redirects for
+local clients stay allowed). See
+[Approving MCP clients](./DEPLOY.md#approving-mcp-clients) for example callback
+URIs.
+
+To sign in through Cloudflare Access instead of GitHub, see
+[Cloudflare Access](./DEPLOY.md#cloudflare-access),
+which also lists the MCP clients tested with it.
+
 ## Why not YNAB OAuth?
 
 YNAB OAuth is deliberately not supported. Its token exchange requires a client
@@ -112,30 +140,31 @@ YNAB recommends a Personal Access Token for an individual accessing their own
 account
 ([Personal Access Tokens](https://api.ynab.com/#personal-access-tokens)).
 
-Setting `YNAB_READ_ONLY` to `"true"` drops every write tool from the tool list,
-which is worth considering for a connector you will mostly use on a phone.
+Setting `YNAB_READ_ONLY` to `"true"` drops every YNAB write tool from the tool
+list, which is worth considering for a connector you will mostly use on a phone.
 
 ## Tools
 
 Plan-scoped tools take an optional `planId` that falls back to
 `YNAB_PLAN_ID`. Optional tool inputs may be `null`; the server treats `null`
 the same as omitting that input. All monetary values — in both directions — are
-plain currency amounts, never YNAB's milliunits; conversion happens in
-`src/tools/money.ts`.
+plain currency amounts, never YNAB's milliunits. Reported amounts use the
+plan currency's precision (three decimals for currencies such as the Kuwaiti
+dinar) and fall back to two decimals if its settings cannot be read; conversion
+happens in `src/tools/money.ts`.
 
 ### Reading
 
 | Tool | What it does |
 | --- | --- |
 | `ynab_list_plans` | Every plan on the account. Run this first to find a plan ID. |
-| `ynab_plan_summary` | A month at a glance: income, budgeted, activity, Ready to Assign, plus categories split into `overspent`, `underfunded` (goal not yet met) and `positive_balance`. Hidden and deleted categories are excluded. |
+| `ynab_plan_summary` | A month at a glance: income, budgeted, activity, Ready to Assign, plus categories split into `overspent`, `underfunded` (goal not yet met) and `positive_balance`. Hidden and deleted categories are excluded. `budgetVsActuals: true` adds a `budget_vs_actuals` block: `budgeted`, `activity`, `balance`, `variance` (budgeted plus activity) and `percent_used` (null when nothing was assigned) per category, subtotalled per category group and in `totals`. Credit Card Payments is listed as its own group but left out of `totals`, since its activity is card spending moving in minus payments going out. YNAB's internal Inflow: Ready to Assign category (whose activity is the month's income) is skipped; other internal categories, such as Uncategorized, are listed and counted when they have activity. |
 | `ynab_list_accounts` | Accounts with balances. `includeClosedAccounts` to see closed ones. |
 | `ynab_list_categories` | Categories grouped by category group, with goal info. |
 | `ynab_list_payees` | Payees, for resolving payee IDs. |
-| `ynab_list_months` | Every plan month with its summary numbers. |
-| `ynab_list_scheduled_transactions` | Scheduled/recurring transactions. |
-| `ynab_get_transactions` | Transactions filtered by `sinceDate`, `accountId`, `categoryId`, `payeeId`, `type` (`all`/`uncategorized`/`unapproved`) and `limit` (default 100). |
-| `ynab_get_unapproved_transactions` | Unapproved transactions, optionally from `sinceDate` onward. |
+| `ynab_list_months` | Every plan month since the plan began, with raw income, budgeted, activity, Ready to Assign, age-of-money and note fields. For recent income versus spending, use `ynab_cash_flow`. |
+| `ynab_list_scheduled_transactions` | The scheduled transactions set up in YNAB. For recurring charges found in transaction history, see `ynab_detect_recurring`; for a projected balance, `ynab_balance_forecast`. |
+| `ynab_get_transactions` | Transactions optionally filtered to `sinceDate`–`untilDate`, by `type` (`all`/`uncategorized`/`unapproved`), and by at most one of `accountId`, `categoryId` or `payeeId` (the first in that order wins). To search, add `payeeContains`, `memoContains` (case-insensitive), `minAmount`/`maxAmount` (ignoring sign) or `direction` (`outflow`/`inflow`/`any`); any search option or `untilDate` adds a `totals` block (`count`, `inflow`, `outflow`, `net`) over every match, including transfers between accounts, and `totalsOnly: true` returns only that. Without `categoryId` or `payeeId`, splits are matched leg by leg and the totals count only the matching legs; with them, rows are matched as YNAB returns them, so a split's parent row in the payee listing counts at its full amount. `limit` defaults to 100 and does not affect the totals. |
 | `ynab_suggest_categories` | Opt-in, read-only category previews for unapproved, uncategorized ordinary outflows. Deleted and categorized rows are dropped in default mode; approved, reconciled, balance-adjustment, transfer, split, and inflow rows are skipped as applicable. |
 
 ### Category suggestions (optional)
@@ -171,54 +200,113 @@ limit. The top-level `skipped` object reports `total_count` and a `count` plus
 `skipped_inflow`, and `skipped_already_categorized`. With explicit
 `transactionIds`, every non-deleted fetched row remains an individual result,
 including rows carrying a `skipped_*` status; deleted rows are omitted.
-Payee history uses the latest 12 months, capped at 50 qualifying exact-payee
-rows. The history rule applies only when at least three such rows all use the
-same still-eligible category; every eligible row without that unanimous signal
-goes to TypeSafe's pinned `typesafe/jev-1.13` System One model, via OpenRouter, in batches of ten. Any
-disagreement between the history plurality and the model forces
-`needs_review`. Every inspected eligible row includes a status, content
-fingerprint, proposed category, confidence, winning probability, up to three
-alternatives, and history summary. Applying a suggestion remains a separate,
-explicit human decision using `ynab_apply_category_suggestions` (or the general
-`ynab_update_transaction` tool).
+Payee history uses the latest 12 months, capped at 50 qualifying rows. When the
+payee has no qualifying rows with the same payee ID, history falls back to rows
+from payees with a similar name: after Unicode NFC normalization, lowercasing,
+and removing everything except letters and numbers, one name begins the other
+and the shorter is at least six characters, so a truncated bank payee such as
+"Better Bl" draws on "Better Blend" history. Each history summary reports
+`match` (`payee`, `similar_payee_name`, or `null`) and
+`matched_payee_names`.
+
+Each eligible row is then routed in this order, and `source` names the step
+that answered:
+
+1. **Exact-payee history (`history_rule`).** When at least one qualifying row
+   has the same payee ID and every such row uses the same still-eligible
+   category, that category is `suggested`. When those rows disagree, the row is
+   `needs_review` and proposes the most recently used category, with the
+   others as `top_alternatives` carrying their `history_count`. No model call is
+   made for either case.
+2. **Personal prior (`personal_prior`).** A naive-Bayes classifier is trained
+   for each request on the plan's own categorized ordinary outflows from the
+   same 12-month history, using payee and bank-import name tokens, the account,
+   and a coarse amount bucket. It is used when history contains categorized
+   rows across at least two categories; a single-category prior cannot rank
+   alternatives. Name tokens never seen in training are ignored rather than
+   scored. When its top category reaches probability 0.9, the row is
+   `suggested` without a model call. The probability is reported under
+   `personal_prior.ranking`, never as `model_confidence`. Below 0.9 the prior
+   only ranks: its top three appear on the model's row for comparison.
+3. **Model (`jev`).** Every remaining row goes, via OpenRouter, to TypeSafe's pinned
+   `typesafe/jev-1.13` System One model in batches of ten. A model answer is a ranked
+   shortlist, never a suggestion: every answer that names a category is
+   `needs_review`, while an explicit model abstention is `left_uncategorized`.
+   The pinned model's stored review threshold is therefore 0; thresholds stay
+   model-specific because confidence scales differ between models.
+
+Similar-name history is never a rule; when a row reaches the model, it is
+included as suggestive evidence. The history summary's `reference_category_id` is the category a
+proposal is compared with: the most recently used one for exact-payee history,
+and the plurality for similar-name history. A similar-name disagreement is
+reported as `conflict` but does not change the status, because a prefix match
+does not establish merchant identity. Every inspected eligible row includes a
+status, source, content fingerprint, proposed category, model confidence and
+winning probability (model rows only), up to three alternatives, the history
+summary, and the personal-prior ranking where one was computed. The response's
+`thresholds` object reports the values in force, and `personal_prior` reports
+how many rows trained the prior and whether it was available for routing.
+Applying a suggestion remains a separate, explicit human decision using
+`ynab_apply_category_suggestions` (or the general `ynab_update_transaction`
+tool).
+
+Why this order: households file payees their own way, such as restaurants
+under a groceries category or clinics under a savings category. A
+general-purpose model cannot know that, but the plan's own history encodes it.
+On real household history, history rules and the personal prior were much more
+accurate than a model on the same rows. The model's high-confidence answers
+were wrong far more often than on synthetic fixtures, which is why they are
+review-only. To evaluate your own plan, or a local model, see
+[Evaluating categorization and local decision models](./docs/local-decision-model.md).
 
 Enabling this feature sends the transaction's display payee, imported/original
 payee, memo, amount, date, and account name/type/on-budget status, plus visible
-category group and category names, to **OpenRouter, which routes it to TypeSafe;
-both act as third-party processors**.
-It does not send YNAB UUIDs, balances, goals, approval/cleared state, or raw
-transaction history. OpenRouter's published Jev 1.13 price at the time of this
-release is **$0.042 per million input tokens; output tokens are free**. The tool
-returns preflight estimates, actual token usage, and projected cost on each run
+category group and category names, to **OpenRouter, which routes it to TypeSafe; both act as third-party processors**.
+For model-bound rows with similar-name matches, it also sends the matched payee
+names and per-category key, group, name, and count. When
+`YNAB_AI_TYPICAL_PAYEES=true`, each model request also lists up to eight of each
+category's most frequent payee names from the last 12 months
+(`typical_payees`), and the response sets
+`typical_payees_sent: true`. This makes the model noticeably more accurate on a
+household's own filing habits, but it discloses aggregated payee history, so it
+is off by default. It does not send YNAB UUIDs, balances, goals,
+approval/cleared state, or raw transaction history. Rows answered by history or
+the personal prior are never sent. OpenRouter's published
+Jev 1.13 price at the time of this release is **$0.042 per million input tokens;
+output tokens are free**. The tool returns preflight estimates, actual token
+usage, and projected cost on each run
 and refuses requests over its per-call token/cost ceilings. Pricing and
 provider limits can change; check <https://openrouter.ai/typesafe/jev-1.13>.
 
-The prototype is intentionally narrow and not default-on. Its supporting
+The prototype is intentionally narrow and not default-on. Its original
 98.3% exact-label, 98.9% top-three, and 60/60 expected-abstention results came
-from 40 synthetic, single-evaluator fixtures—not a production accuracy claim.
+from 40 synthetic, single-evaluator fixtures, not a production accuracy claim.
+Real household history is much harder, as described above.
 
 ### Reporting
 
-Splits are counted through their subtransactions and transfers between your own
-accounts are excluded, so these report spending rather than money movement.
+In the spending reports, splits are counted through their subtransactions and
+transfers between your own accounts are excluded, so they report spending rather
+than money movement.
 
 | Tool | What it does |
 | --- | --- |
-| `ynab_spending_by_category` | Total spend per category over a date range, biggest first, with share of total. Defaults to the last 30 days. |
-| `ynab_spending_by_payee` | The same, grouped by merchant. |
+| `ynab_spending_by_category` | Total spend per category over a date range, biggest first, with share of total. Defaults to the last 30 days. With `monthly: true`, each category also gets spend per calendar month, its mean over the full months, and its last full month's change against the earlier full months, over the last `months` months (default 6, at most 24) or from `sinceDate`, which overrides `months`; `untilDate` then defaults to today. Totals are gross outflows, so refunds aren't netted. |
+| `ynab_spending_by_payee` | The same, grouped by merchant, including `monthly`. |
 | `ynab_cash_flow` | Income vs spending per month with the running net, from YNAB's own monthly totals. Defaults to the last 6 months. |
+| `ynab_balance_forecast` | The combined balance of your accounts over the next `days` (default 30, max 365, from today in UTC), projected from scheduled transactions only: starting balance, the scheduled events, the end-of-day running balance, the lowest point and the ending balance. `accountIds` picks the accounts; the default is every open on-budget account. `limit` caps the events (default 100, `0` leaves them out); `event_count`, the running balance, low point and ending balance always cover every event. Transfers between two included accounts (credit card payments too) net to zero; a transfer to an account outside the forecast counts as money leaving, and one from such an account as money arriving. Splits are counted leg by leg. Occurrences whose date has passed but that YNAB hasn't entered yet count on the first day, marked `overdue` with their `scheduled_date` and summarised in `overdue_schedules`. A twice-a-month schedule's second date is approximated as 15 days after the first when YNAB doesn't give it, and marked `approximate`. |
+| `ynab_detect_recurring` | Recurring outflows such as subscriptions and bills: a payee's charges of a similar amount at a regular interval (weekly to yearly), with typical amount, yearly cost at the latest amount, next expected date, whether it seems to have stopped, and whether a scheduled transaction has the same payee name. Loan and mortgage payments are transfers, so they are not included, and refunds are not netted. A heuristic; defaults to the last 365 days. |
 
 ### Writing
 
 | Tool | What it does |
 | --- | --- |
-| `ynab_create_transaction` | Creates a transaction. Needs `date`, `amount`, an account (`accountId` or `accountName`) and a payee (`payeeId` or `payeeName`); category optional as `categoryId` or `categoryName`. |
-| `ynab_update_transaction` | Updates any subset of an existing transaction's fields. |
+| `ynab_create_transaction` | Creates a transaction. Needs `date`, `amount`, an account (`accountId` or `accountName`) and a payee (`payeeId` or `payeeName`); category optional as `categoryId` or `categoryName`, or `subtransactions` to split it. |
+| `ynab_update_transaction` | Updates any subset of an existing transaction's fields, or splits an unsplit one with `subtransactions`. |
 | `ynab_delete_transaction` | Deletes a transaction. Not undoable. |
-| `ynab_approve_transaction` | Approves (or un-approves) one transaction. |
-| `ynab_bulk_approve_transactions` | Approves an array of transaction IDs in one API call. |
+| `ynab_bulk_approve_transactions` | Approves an array of transaction IDs in one API call, or un-approves them with `approved: false`. |
 | `ynab_apply_category_suggestions` | Applies up to 25 explicit category suggestions with refetch and stale-data checks, dry-run support, and a pre-write undo manifest. Never auto-applies or approves transactions. |
-| `ynab_update_category_budget` | Sets the total budgeted amount for a category in a month. Not an increment. |
+| `ynab_update_category_budget` | Sets the total budgeted amount for one category in a month. Not an increment; use `ynab_move_money` to move money between categories. |
 | `ynab_import_transactions` | Triggers an import from linked institutions, the same as hitting Import in the YNAB app. |
 | `ynab_move_money` | Moves budgeted money between two categories in a month, for covering overspending. |
 | `ynab_auto_assign` | Spreads Ready to Assign over categories with unmet monthly goals, largest shortfall first. `dryRun` to preview, `maxTotal` to cap it. |
@@ -231,6 +319,21 @@ Closed accounts and hidden categories are never matched. If a name is ambiguous
 or unrecognised the call fails and names the near misses rather than guessing,
 and successful calls echo back `matchedAccount` / `matchedCategory` so a wrong
 guess is visible.
+
+#### Split transactions
+
+`ynab_create_transaction` and `ynab_update_transaction` split a transaction
+across categories when given `subtransactions`: two or more entries of
+`{ amount, category_name, payee_name, memo }`, the same shape
+`ynab_get_transactions` returns for a split. Amounts are in dollars and must add
+up to the transaction amount exactly (on update, the new `amount` if given,
+otherwise the current one); categories go on the splits, not on the parent.
+Split category names are matched like `categoryName` and echoed back as
+`matchedSplitCategories`.
+
+YNAB cannot change the splits of a transaction that is already split, so
+`ynab_update_transaction` refuses rather than silently dropping the change.
+Delete and recreate the transaction to re-split it.
 
 #### Writes that can half-succeed
 
@@ -249,10 +352,10 @@ text content, so a failed write is never mistaken for a successful one.
 #### Tool annotations
 
 Every tool advertises MCP annotations (`readOnlyHint`, `destructiveHint`,
-`idempotentHint`, `openWorldHint`) alongside its schema. Reading tools are
-`readOnlyHint: true`; among the writing tools, only `ynab_delete_transaction`
-sets `destructiveHint: true`. A client may use these hints to decide which
-calls need a confirmation prompt.
+`idempotentHint`, `openWorldHint`) alongside its schema. Tools that change
+neither YNAB nor the Worker's service state are `readOnlyHint: true`; among the
+YNAB writing tools, only `ynab_delete_transaction` sets `destructiveHint: true`.
+A client may use these hints to decide which calls need a confirmation prompt.
 
 #### `cleared` and `flagColor`
 
@@ -295,20 +398,31 @@ Useful references:
 
 ## Contributing
 
-Pull requests targeting `main` must be raised through
-[`no-mistakes`](https://github.com/kunchenguid/no-mistakes).
-Install it, run `no-mistakes init`, commit your changes, and push with
-`git push no-mistakes` so the review/test pipeline can open a compliant PR.
-See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/)
-for setup.
+Pull requests are welcome. For a new tool or a larger change, please open an
+issue first so we can agree on the scope.
+
+1. Fork the repository and create a branch from `main`.
+2. Make your change and add or update tests in `src/tests/`. New tools follow
+   the pattern in [Adding a tool](#adding-a-tool).
+3. Run `npm run test:run` and `npm run typecheck`.
+4. Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+   for commit messages and the pull request title.
+5. Open a pull request against `main`.
+
+Every pull request runs the test suite on Node.js 22, 24 and 26 and receives an
+automated code review. Both checks must pass and review conversations must be
+resolved before the pull request can be merged.
 
 ## Compatibility
 
-`ynab_list_budgets` and `ynab_budget_summary` remain accepted aliases for the
-plan-named tools. `budgetId` and `YNAB_BUDGET_ID` are deprecated but still
+`budgetId` and `YNAB_BUDGET_ID` are deprecated but still
 accepted; there is no removal date. Use `planId` and `YNAB_PLAN_ID` for new
 integrations.
 
 ## License
 
 See [LICENSE](./LICENSE).
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/chart?repos=calebl/ynab-mcp-server&type=date&legend=top-left)](https://www.star-history.com/?repos=calebl%2Fynab-mcp-server&type=date&legend=top-left)
